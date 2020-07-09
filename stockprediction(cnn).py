@@ -8,135 +8,229 @@ Original file is located at
 """
 
 #CNN - Stock Prediction 
+
 import numpy as np
+import os
 import pandas_datareader as web
-from keras.layers import Convolution1D, Dense, MaxPooling1D, Flatten
-from keras.models import Sequential
-from keras.optimizers import *
-import math
-from sklearn.metrics import mean_squared_error
 import matplotlib.pyplot as plt
+import math
+from sklearn.preprocessing import MinMaxScaler
+from PIL import Image
+import cv2
+from keras.models import Sequential 
+from keras.layers import Conv2D, MaxPooling2D, Dense, Dropout, Flatten, Activation 
+plt.style.use('fivethirtyeight')
 
-df = web.DataReader('AAPL', data_source='yahoo', start='2012-01-01', end='2019-12-17') 
+def loaddata():
+    df = web.DataReader('AAPL', data_source='yahoo', start='2004-01-01', end='2020-01-01') 
 
-#Visualizieren die Schlusspreisverlauff
-plt.figure(figsize=(16,8))
-plt.title('_Schlusspreisverlauf_')
-plt.plot(df['Close'])
-plt.xlabel('Datum',fontsize=18)
-plt.ylabel('Schlusspreis USD ($)',fontsize=18)
-plt.show()
+    #Visualizieren die Schlusspreisverlauff
+    plt.figure(figsize=(16,8))
+    plt.title('_Schlusspreisverlauf_')
+    plt.plot(df['Close'])
+    plt.xlabel('Datum',fontsize=18)
+    plt.ylabel('Schlusspreis USD ($)',fontsize=18)
+    plt.show()
+    
+loaddata() 
 
 data_cl = df.filter(['Close']) #Schluss (Close) Column von Daten : data_cl
 clset = data_cl.values #numpy array - data_cl : cl_set
+data_op = df.filter(['Open']) #Öffnüng (Open) Column von Daten : data_op
+opset = data_op.values #numpy array - data_op : op_set
+data_vol = df.filter(['Volume']) #Volumen (Volume) Column von Daten : data_vol
+volset = data_vol.values #numpy array - data_vol : vol_set
+
+# len(clset) : 4027
+
 training_data_len = math.ceil( len(clset) *.8) #Train Reiheanzahl
 
-training_data_len
+#Skalierung zwischen 0-1 
+sc = MinMaxScaler(feature_range=(0, 1)) 
+sc_data = sc.fit_transform(clset)
 
-raw_data = []
-raw_dates = []
-for i in range(0,training_data_len):
-  try:
-    close_price = float(line.split(',')[4])
-    raw_data.append(close_price)
-    raw_dates.append(line.split(',')[0])
-  except:
-    continue
+train_data = sc_data[0:training_data_len  , : ] #scaliertes trainingsset
 
-def make_timeseries_instances(timeseries, window_size):
-    """Make input features and prediction targets from a `timeseries` for use in machine learning.
-    :return: A tuple of `(X, y, q)`.  `X` are the inputs to a predictor, a 3D ndarray with shape
-      ``(timeseries.shape[0] - window_size, window_size, timeseries.shape[1] or 1)``.  For each row of `X`, the
-      corresponding row of `y` is the next value in the timeseries.  The `q` or query is the last instance, what you would use
-      to predict a hypothetical next (unprovided) value in the `timeseries`.
-    :param ndarray timeseries: Either a simple vector, or a matrix of shape ``(timestep, series_num)``, i.e., time is axis 0 (the
-      row) and the series is axis 1 (the column).
-    :param int window_size: The number of samples to use as input prediction features (also called the lag or lookback).
-    """
-    timeseries = np.asarray(timeseries)
-    assert 0 < window_size < timeseries.shape[0]
-    X = np.atleast_3d(np.array([timeseries[start:start + window_size] for start in range(0, timeseries.shape[0] - window_size)]))
-    y = timeseries[window_size:]
-    q = np.atleast_3d([timeseries[-window_size:]])
-    return X, y, q
+#Data teilen: prex_train-y_train, prex_test-y_test 
+prex_train=[]
+y_train=[]
 
-def make_timeseries_regressor(window_size, filter_length, nb_input_series=1, nb_outputs=1, nb_filter=4):
-    """:Return: a Keras Model for predicting the next value in a timeseries given a fixed-size lookback window of previous values.
-    The model can handle multiple input timeseries (`nb_input_series`) and multiple prediction targets (`nb_outputs`).
-    :param int window_size: The number of previous timeseries values to use as input features.  Also called lag or lookback.
-    :param int nb_input_series: The number of input timeseries; 1 for a single timeseries.
-      The `X` input to ``fit()`` should be an array of shape ``(n_instances, window_size, nb_input_series)``; each instance is
-      a 2D array of shape ``(window_size, nb_input_series)``.  For example, for `window_size` = 3 and `nb_input_series` = 1 (a
-      single timeseries), one instance could be ``[[0], [1], [2]]``. See ``make_timeseries_instances()``.
-    :param int nb_outputs: The output dimension, often equal to the number of inputs.
-      For each input instance (array with shape ``(window_size, nb_input_series)``), the output is a vector of size `nb_outputs`,
-      usually the value(s) predicted to come after the last value in that input instance, i.e., the next value
-      in the sequence. The `y` input to ``fit()`` should be an array of shape ``(n_instances, nb_outputs)``.
-    :param int filter_length: the size (along the `window_size` dimension) of the sliding window that gets convolved with
-      each position along each instance. The difference between 1D and 2D convolution is that a 1D filter's "height" is fixed
-      to the number of input timeseries (its "width" being `filter_length`), and it can only slide along the window
-      dimension.  This is useful as generally the input timeseries have no spatial/ordinal relationship, so it's not
-      meaningful to look for patterns that are invariant with respect to subsets of the timeseries.
-    :param int nb_filter: The number of different filters to learn (roughly, input patterns to recognize).
-    """
-    model = Sequential((
-        # The first conv layer learns `nb_filter` filters (aka kernels), each of size ``(filter_length, nb_input_series)``.
-        # Its output will have shape (None, window_size - filter_length + 1, nb_filter), i.e., for each position in
-        # the input timeseries, the activation of each filter at that position.
-        #Convolution1D(nb_filter=nb_filter, filter_length=filter_length, activation='relu', input_shape=(window_size, nb_input_series)),
-        Convolution1D(input_shape=(window_size, nb_input_series), 
-                      kernel_size=filter_length, activation="relu", filters=nb_filter),
-        MaxPooling1D(),     # Downsample the output of convolution by 2X.
-        #Convolution1D(nb_filter=nb_filter, filter_length=filter_length, activation='relu'),
-        Convolution1D(kernel_size=filter_length, activation="relu", filters=nb_filter),
-        MaxPooling1D(),
-        Flatten(),
-        Dense(nb_outputs, activation='linear'),     # For binary classification, change the activation to 'sigmoid'
-    ))
-    opt = Adam(lr=0.001)
-    model.compile(loss='mean_squared_error', optimizer=opt, metrics=['mae'])
-    # To perform (binary) classification instead:
-    # model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['binary_accuracy'])
-    return model
+#121. günün kapanış fiyatını tahmin etmek için önceki 120 günlük veri seti
+for i in range(120,len(train_data)):
+    prex_train.append(train_data[i-120:i, 0]) 
+    y_train.append(train_data[i, 0])
+prex_train = np.array(prex_train)
+prex_train = np.asarray(prex_train.reshape(3102,12,10))
 
-def evaluate_timeseries(timeseries, window_size, epochs, batch_size):
-    """Create a 1D CNN regressor to predict the next value in a `timeseries` using the preceding `window_size` elements
-    as input features and evaluate its performance.
-    :param ndarray timeseries: Timeseries data with time increasing down the rows (the leading dimension/axis).
-    :param int window_size: The number of previous timeseries values to use to predict the next.
-    """
-    filter_length = 5
-    nb_filter = 4
-    timeseries = np.atleast_2d(timeseries)
-    if timeseries.shape[0] == 1:
-        timeseries = timeseries.T       # Convert 1D vectors to 2D column vectors
+#x_train-images Folder
+dirName = 'xtr_img'
+if not os.path.exists(dirName):
+    os.mkdir(dirName)
+    print("Directory " , dirName ,  " Created ")
+else:    
+    print("Directory " , dirName ,  " already exists")
 
-    nb_samples, nb_series = timeseries.shape
-    print('\n\nTimeseries ({} samples by {} series):\n'.format(nb_samples, nb_series), timeseries)
-    model = make_timeseries_regressor(window_size=window_size, filter_length=filter_length, nb_input_series=nb_series, nb_outputs=nb_series, nb_filter=nb_filter)
-    print('\n\nModel with input size {}, output size {}, {} conv filters of length {}'.format(model.input_shape, model.output_shape, nb_filter, filter_length))
-    model.summary()
-
-    X, y, q = make_timeseries_instances(timeseries, window_size)
-    print('\n\nInput features:', X, '\n\nOutput labels:', y, '\n\nQuery vector:', q, sep='\n')
-    test_size = int(0.2 * nb_samples)           # In real life you'd want to use 0.2 - 0.5
-    X_train, X_test, y_train, y_test = X[:-test_size], X[-test_size:], y[:-test_size], y[-test_size:]
-    model.fit(X_train, y_train, epochs=epochs, batch_size=batch_size, validation_data=(X_test, y_test))
-
-    pred = model.predict(X_test)
-    print('\n\nactual', 'predicted', sep='\t')
-    for actual, predicted in zip(y_test, pred.squeeze()):
-        print(actual.squeeze(), predicted, sep='\t')
-    print('next', model.predict(q).squeeze(), sep='\t')
+#x_test-images Folder
+dirName = 'xtest_img'
+if not os.path.exists(dirName):
+    os.mkdir(dirName)
+    print("Directory " , dirName ,  " Created ")
+else:    
+    print("Directory " , dirName ,  " already exists")
     
-    testScore = math.sqrt(mean_squared_error(y_test,pred))
-    print('Test Score: %.2f RMSE' % (testScore))
+#x_train (img)
+path = 'xtr_img/'
+def convert_img(xtrainzahl, imgname): #3102-0
+  img = Image.fromarray(prex_train[xtrainzahl], 'RGB')
+  img.save(path + imgname)
+  if(i%100==0):
+    print(str(xtrainzahl) + 'ist fertig')
+    
+#x_test (img)
+path='xtest_img/'
+def tconvert_img(xtestzahl, imgname): #3161-4027
+  img = Image.fromarray(prex_test[xtestzahl], 'RGB')
+  img.save(path + imgname)
+  if(i%100==0):
+    print(str(xtestzahl) + 'ist fertig')
+    
+#0-999 train img create:
+for i in range(0, 3102):
+  xtrainzahl = i
+  imgname = 'xtrimg' + str(i) + '.png'
+  convert_img(xtrainzahl, imgname)
+    
+x_train = []
+xtrlabels = []
+def xTrainProcess(path):
+  p = 0
+  x = 0
+  images = [f for f in os.listdir(path)]
+  for iname in images:
+    images = str(path + '/' + iname)
+    img = cv2.imread(images, cv2.IMREAD_COLOR)
+    x_train.append(img)
+    xtrlabels.append(x)
+    x = x+1
+    p = p+1
 
-np.set_printoptions(threshold=25)
-window_size = 50
-epochs = 25
-batch_size = 2
+    if(p%100==0):
+      print(str(p) + ' ist fertig')
 
-timeseries = raw_data,raw_dates
-evaluate_timeseries(timeseries[0], window_size, epochs, batch_size)
+path = '/content/xtr_img'
+xTrainProcess(path)
 
+model = Sequential()
+model.add(Conv2D(32, kernel_size=(3, 3),
+                 activation='relu',
+                 input_shape=(12,10,3)))
+model.add(Conv2D(64, (3, 3), activation='relu'))
+model.add(MaxPooling2D(pool_size=(2, 2)))
+model.add(Dropout(0.25))
+model.add(Flatten())
+model.add(Dense(128, activation='relu'))
+model.add(Dropout(0.5))
+model.add(Dense(1, activation='softmax'))
+
+model.summary()
+
+#Compile => optimizer:adam loss:ortalama kara hatası
+model.compile(optimizer='adam', loss='mean_squared_error')
+
+x_train = np.asarray(x_train)
+
+#Train das Modell
+model.fit(x_train, y_train, batch_size=4, epochs=3)
+
+#Test Daten
+test_data = sc_data[training_data_len - 120: , : ]
+#prex_test und y_test Daten
+xi = 0
+prex_test = []
+y_test =  clset[training_data_len : , : ]
+for i in range(120,len(test_data)):
+    prex_test.append(test_data[i-120:i,0])    
+    xi = xi + 1
+    
+prex_test = np.array(prex_test)
+prex_test = np.asarray(prex_test.reshape(805,12,10))   
+
+for i in range(0,xi):
+  xtestzahl = i 
+  imgname = 'xtestimg' + str(i) + '.png'
+  tconvert_img(xtestzahl, imgname)
+
+x_test = []
+xtestlabels = []
+def xTestProcess(path):
+  p = 0
+  x = 0
+  images = [f for f in os.listdir(path)]
+  for iname in images:
+    images = str(path + '/' + iname)
+    img = cv2.imread(images, cv2.IMREAD_COLOR)
+    x_test.append(img)
+    xtestlabels.append(x)
+    x = x+1
+    p = p+1
+
+    if(p%100==0):
+      print(str(p) + ' ist fertig')
+    
+path = '/content/xtest_img'
+xTestProcess(path)
+
+x_test = np.asarray(x_test)
+#Vorhergesagte Preis Werte Model
+predictions = model.predict(x_test) 
+predictions = sc.inverse_transform(predictions)#Undo Skalierung
+
+#RMSE Wert - Perfektion des Modells - (Perfekt:0)
+rmse=np.sqrt(np.mean(((predictions- y_test)**2)))
+
+#Plot/Create the data for the graph
+train = data_cl[:training_data_len]
+valid = data_cl[training_data_len:]
+valid['Predictions'] = predictions
+
+#Graph
+plt.figure(figsize=(16,8))
+plt.title('_Aktienprognose_')
+plt.xlabel('Datum', fontsize=18)
+plt.ylabel('Schluss Preis USD ($)', fontsize=18)
+plt.plot(train['Close'])
+plt.plot(valid[['Close', 'Predictions']])
+plt.legend(['Train', 'Wert', 'Vorhergesagte Werte'], loc='lower right')
+plt.show()
+
+#Schluss Werte und vorhergesagte Werte
+print(valid)
+
+#Get the quote
+#APPLE
+apple_quote = web.DataReader('AAPL', data_source='yahoo', start='2012-01-01', end='2019-12-17')
+#GOOGLE
+#google_quote = web.DataReader('AAPL', data_source='yahoo', start='2004-08-01', end='2020-01-01')
+#Create a new dataframe
+new_df = apple_quote.filter(['Close'])
+#Letzte 60 Tagen Schlusspreis 
+letzte_60 = new_df[-60:].values
+#Skalieren 0-1
+letzte_60_sc = sc.transform(letzte_60)
+
+
+X_test = []
+X_test.append(letzte_60_sc)
+#numpy array
+X_test = np.array(X_test)
+#Datenformung
+X_test = np.reshape(X_test, (X_test.shape[0], X_test.shape[1], 1))
+#vorhergesagte Werte
+pred_price = model.predict(X_test)
+#undo Skalierung
+pred_price = sc.inverse_transform(pred_price)
+print(pred_price)
+
+#Get the quote
+apple_quote2 = web.DataReader('AAPL', data_source='yahoo', start='2019-12-18', end='2019-12-18')
+print(apple_quote2['Close'])
